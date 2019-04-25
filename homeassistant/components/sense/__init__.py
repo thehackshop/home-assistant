@@ -7,8 +7,6 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, CONF_TIMEOUT
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.discovery import async_load_platform
 
-REQUIREMENTS = ['sense_energy==0.7.0']
-
 _LOGGER = logging.getLogger(__name__)
 
 ACTIVE_UPDATE_RATE = 60
@@ -44,7 +42,7 @@ async def async_setup(hass, config):
         _LOGGER.error("Could not authenticate with sense server")
         return False
     hass.async_create_task(
-        async_load_platform(hass, 'sensor', DOMAIN, None, config))
+        async_load_platform(hass, 'sensor', DOMAIN, {}, config))
     hass.async_create_task(
-        async_load_platform(hass, 'binary_sensor', DOMAIN, None, config))
+        async_load_platform(hass, 'binary_sensor', DOMAIN, {}, config))
     return True

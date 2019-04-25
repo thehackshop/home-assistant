@@ -6,15 +6,18 @@ from typing import Any, Dict
 import aiohttp
 from hass_nabucasa.client import CloudClient as Interface
 
+from homeassistant.core import callback
 from homeassistant.components.alexa import smart_home as alexa_sh
 from homeassistant.components.google_assistant import (
     helpers as ga_h, smart_home as ga)
 from homeassistant.const import CLOUD_NEVER_EXPOSED_ENTITIES
 from homeassistant.helpers.typing import HomeAssistantType
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util.aiohttp import MockRequest
 
 from . import utils
-from .const import CONF_ENTITY_CONFIG, CONF_FILTER, DOMAIN
+from .const import (
+    CONF_ENTITY_CONFIG, CONF_FILTER, DOMAIN, DISPATCHER_REMOTE_UPDATE)
 from .prefs import CloudPreferences
 
 
@@ -99,9 +102,13 @@ class CloudClient(Interface):
 
             self._google_config = ga_h.Config(
                 should_expose=should_expose,
-                allow_unlock=self._prefs.google_allow_unlock,
+                secure_devices_pin=self._prefs.google_secure_devices_pin,
                 entity_config=google_conf.get(CONF_ENTITY_CONFIG),
             )
+
+        # Set it to the latest.
+        self._google_config.secure_devices_pin = \
+            self._prefs.google_secure_devices_pin
 
         return self._google_config
 
@@ -115,12 +122,18 @@ class CloudClient(Interface):
         self._alexa_config = None
         self._google_config = None
 
-    async def async_user_message(
-            self, identifier: str, title: str, message: str) -> None:
+    @callback
+    def user_message(self, identifier: str, title: str, message: str) -> None:
         """Create a message for user to UI."""
         self._hass.components.persistent_notification.async_create(
             message, title, identifier
         )
+
+    @callback
+    def dispatcher_message(self, identifier: str, data: Any = None) -> None:
+        """Match cloud notification to dispatcher."""
+        if identifier.startswith("remote_"):
+            async_dispatcher_send(self._hass, DISPATCHER_REMOTE_UPDATE, data)
 
     async def async_alexa_message(
             self, payload: Dict[Any, Any]) -> Dict[Any, Any]:
@@ -136,11 +149,18 @@ class CloudClient(Interface):
         if not self._prefs.google_enabled:
             return ga.turned_off_response(payload)
 
-        cloud = self._hass.data[DOMAIN]
-        return await ga.async_handle_message(
-            self._hass, self.google_config,
-            cloud.claims['cognito:username'], payload
+        answer = await ga.async_handle_message(
+            self._hass, self.google_config, self.prefs.cloud_user, payload
         )
+
+        # Fix AgentUserId
+        try:
+            cloud = self._hass.data[DOMAIN]
+            answer['payload']['agentUserId'] = cloud.claims['cognito:username']
+        except (TypeError, KeyError):
+            return ga.turned_off_response(payload)
+
+        return answer
 
     async def async_webhook_message(
             self, payload: Dict[Any, Any]) -> Dict[Any, Any]:

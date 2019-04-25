@@ -1,32 +1,22 @@
-"""
-Support for PlayStation 4 consoles.
-
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/media_player.ps4/
-"""
-from datetime import timedelta
+"""Support for PlayStation 4 consoles."""
 import logging
 import socket
 
 import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
-import homeassistant.util as util
 from homeassistant.components.media_player import (
-    MediaPlayerDevice, ENTITY_IMAGE_URL)
+    ENTITY_IMAGE_URL, MediaPlayerDevice)
 from homeassistant.components.media_player.const import (
-    MEDIA_TYPE_MUSIC, SUPPORT_SELECT_SOURCE,
-    SUPPORT_STOP, SUPPORT_TURN_OFF, SUPPORT_TURN_ON,
-)
-from homeassistant.components.ps4.const import DOMAIN as PS4_DOMAIN
+    MEDIA_TYPE_GAME, SUPPORT_SELECT_SOURCE, SUPPORT_STOP, SUPPORT_TURN_OFF,
+    SUPPORT_TURN_ON)
+from homeassistant.components.ps4 import format_unique_id
 from homeassistant.const import (
-    ATTR_ENTITY_ID, ATTR_COMMAND, CONF_HOST, CONF_NAME, CONF_REGION,
-    CONF_TOKEN, STATE_IDLE, STATE_OFF, STATE_PLAYING,
-)
+    ATTR_COMMAND, ATTR_ENTITY_ID, CONF_HOST, CONF_NAME, CONF_REGION,
+    CONF_TOKEN, STATE_IDLE, STATE_OFF, STATE_PLAYING)
+import homeassistant.helpers.config_validation as cv
 from homeassistant.util.json import load_json, save_json
 
-
-DEPENDENCIES = ['ps4']
+from .const import DOMAIN as PS4_DOMAIN, REGIONS as deprecated_regions
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +27,6 @@ PS4_DATA = 'ps4_data'
 ICON = 'mdi:playstation'
 GAMES_FILE = '.ps4-games.json'
 MEDIA_IMAGE_DEFAULT = None
-
-MIN_TIME_BETWEEN_SCANS = timedelta(seconds=5)
-MIN_TIME_BETWEEN_FORCED_SCANS = timedelta(seconds=10)
 
 COMMANDS = (
     'up',
@@ -101,7 +88,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         name = device[CONF_NAME]
         ps4 = pyps4.Ps4(host, creds)
         device_list.append(PS4Device(
-            name, host, region, ps4, games_file))
+            name, host, region, ps4, creds, games_file))
     add_entities(device_list, True)
 
 
@@ -116,21 +103,24 @@ class PS4Data():
 class PS4Device(MediaPlayerDevice):
     """Representation of a PS4."""
 
-    def __init__(self, name, host, region, ps4, games_file):
+    def __init__(self, name, host, region, ps4, creds, games_file):
         """Initialize the ps4 device."""
         self._ps4 = ps4
         self._host = host
         self._name = name
         self._region = region
+        self._creds = creds
         self._state = None
         self._games_filename = games_file
         self._media_content_id = None
         self._media_title = None
         self._media_image = None
+        self._media_type = None
         self._source = None
         self._games = {}
         self._source_list = []
         self._retry = 0
+        self._disconnected = False
         self._info = None
         self._unique_id = None
         self._power_on = False
@@ -139,7 +129,6 @@ class PS4Device(MediaPlayerDevice):
         """Subscribe PS4 events."""
         self.hass.data[PS4_DATA].devices.append(self)
 
-    @util.Throttle(MIN_TIME_BETWEEN_SCANS, MIN_TIME_BETWEEN_FORCED_SCANS)
     def update(self):
         """Retrieve the latest data."""
         try:
@@ -150,10 +139,17 @@ class PS4Device(MediaPlayerDevice):
                 self._games = self.load_games()
                 if self._games is not None:
                     self._source_list = list(sorted(self._games.values()))
+                # Non-Breaking although data returned may be inaccurate.
+                if self._region in deprecated_regions:
+                    _LOGGER.info("""Region: %s has been deprecated.
+                                    Please remove PS4 integration
+                                    and Re-configure again to utilize
+                                    current regions""", self._region)
         except socket.timeout:
             status = None
         if status is not None:
             self._retry = 0
+            self._disconnected = False
             if status.get('status') == 'Ok':
                 # Check if only 1 device in Hass.
                 if len(self.hass.data[PS4_DATA].devices) == 1:
@@ -196,7 +192,9 @@ class PS4Device(MediaPlayerDevice):
         """Set states for state unknown."""
         self.reset_title()
         self._state = None
-        _LOGGER.warning("PS4 could not be reached")
+        if self._disconnected is False:
+            _LOGGER.warning("PS4 could not be reached")
+        self._disconnected = True
         self._retry = 0
 
     def reset_title(self):
@@ -207,19 +205,24 @@ class PS4Device(MediaPlayerDevice):
 
     def get_title_data(self, title_id, name):
         """Get PS Store Data."""
+        from pyps4_homeassistant.errors import PSDataIncomplete
         app_name = None
         art = None
         try:
-            app_name, art = self._ps4.get_ps_store_data(
+            title = self._ps4.get_ps_store_data(
                 name, title_id, self._region)
-        except TypeError:
+        except PSDataIncomplete:
             _LOGGER.error(
                 "Could not find data in region: %s for PS ID: %s",
                 self._region, title_id)
+        else:
+            app_name = title.name
+            art = title.cover_art
         finally:
             self._media_title = app_name or name
             self._source = self._media_title
             self._media_image = art
+            self._media_type = MEDIA_TYPE_GAME
             self.update_list()
 
     def update_list(self):
@@ -266,7 +269,7 @@ class PS4Device(MediaPlayerDevice):
             self.save_games(games)
 
     def get_device_info(self, status):
-        """Return device info for registry."""
+        """Set device info for registry."""
         _sw_version = status['system-version']
         _sw_version = _sw_version[1:4]
         sw_version = "{}.{}".format(_sw_version[0], _sw_version[1:])
@@ -279,10 +282,14 @@ class PS4Device(MediaPlayerDevice):
             'manufacturer': 'Sony Interactive Entertainment Inc.',
             'sw_version': sw_version
         }
-        self._unique_id = status['host-id']
+
+        self._unique_id = format_unique_id(self._creds, status['host-id'])
 
     async def async_will_remove_from_hass(self):
         """Remove Entity from Hass."""
+        # Close TCP Socket
+        if self._ps4.connected:
+            await self.hass.async_add_executor_job(self._ps4.close)
         self.hass.data[PS4_DATA].devices.remove(self)
 
     @property
@@ -328,7 +335,7 @@ class PS4Device(MediaPlayerDevice):
     @property
     def media_content_type(self):
         """Content type of current playing media."""
-        return MEDIA_TYPE_MUSIC
+        return self._media_type
 
     @property
     def media_image_url(self):
@@ -377,13 +384,18 @@ class PS4Device(MediaPlayerDevice):
     def select_source(self, source):
         """Select input source."""
         for title_id, game in self._games.items():
-            if source == game:
+            if source.lower().encode(encoding='utf-8') == \
+               game.lower().encode(encoding='utf-8') \
+               or source == title_id:
                 _LOGGER.debug(
                     "Starting PS4 game %s (%s) using source %s",
                     game, title_id, source)
                 self._ps4.start_title(
                     title_id, running_id=self._media_content_id)
                 return
+        _LOGGER.warning(
+            "Could not start title. '%s' is not in source list", source)
+        return
 
     def send_command(self, command):
         """Send Button Command."""

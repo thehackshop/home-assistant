@@ -2,11 +2,13 @@
 """Support for HomematicIP Cloud weather devices."""
 import logging
 
-from homeassistant.components.homematicip_cloud import (
-    DOMAIN as HMIPC_DOMAIN, HMIPC_HAPID, HomematicipGenericDevice)
-from homeassistant.components.weather import WeatherEntity
+from homematicip.aio.device import (
+    AsyncWeatherSensor, AsyncWeatherSensorPlus, AsyncWeatherSensorPro)
 
-DEPENDENCIES = ['homematicip_cloud']
+from homeassistant.components.weather import WeatherEntity
+from homeassistant.const import TEMP_CELSIUS
+
+from . import DOMAIN as HMIPC_DOMAIN, HMIPC_HAPID, HomematicipGenericDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,10 +21,6 @@ async def async_setup_platform(
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the HomematicIP weather sensor from a config entry."""
-    from homematicip.aio.device import (
-        AsyncWeatherSensor, AsyncWeatherSensorPlus, AsyncWeatherSensorPro,
-    )
-
     home = hass.data[HMIPC_DOMAIN][config_entry.data[HMIPC_HAPID]].home
     devices = []
     for device in home.devices:
@@ -55,7 +53,7 @@ class HomematicipWeatherSensor(HomematicipGenericDevice, WeatherEntity):
     @property
     def temperature_unit(self):
         """Return the unit of measurement."""
-        return self.hass.config.units.temperature_unit
+        return TEMP_CELSIUS
 
     @property
     def humidity(self):

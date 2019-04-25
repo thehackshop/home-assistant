@@ -7,8 +7,10 @@ from jose import jwt
 from hass_nabucasa.auth import Unauthenticated, UnknownError
 from hass_nabucasa.const import STATE_CONNECTED
 
+from homeassistant.auth.providers import trusted_networks as tn_auth
 from homeassistant.components.cloud.const import (
-    PREF_ENABLE_GOOGLE, PREF_ENABLE_ALEXA, PREF_GOOGLE_ALLOW_UNLOCK, DOMAIN)
+    PREF_ENABLE_GOOGLE, PREF_ENABLE_ALEXA, PREF_GOOGLE_SECURE_DEVICES_PIN,
+    DOMAIN)
 
 from tests.common import mock_coro
 
@@ -334,7 +336,7 @@ async def test_websocket_status(hass, hass_ws_client, mock_cloud_fixture,
     client = await hass_ws_client(hass)
 
     with patch.dict(
-        'homeassistant.components.google_assistant.smart_home.'
+        'homeassistant.components.google_assistant.const.'
         'DOMAIN_TO_GOOGLE_TYPES', {'light': None}, clear=True
     ), patch.dict('homeassistant.components.alexa.smart_home.ENTITY_ADAPTERS',
                   {'switch': None}, clear=True):
@@ -492,21 +494,21 @@ async def test_websocket_update_preferences(hass, hass_ws_client,
     """Test updating preference."""
     assert setup_api[PREF_ENABLE_GOOGLE]
     assert setup_api[PREF_ENABLE_ALEXA]
-    assert setup_api[PREF_GOOGLE_ALLOW_UNLOCK]
+    assert setup_api[PREF_GOOGLE_SECURE_DEVICES_PIN] is None
     client = await hass_ws_client(hass)
     await client.send_json({
         'id': 5,
         'type': 'cloud/update_prefs',
         'alexa_enabled': False,
         'google_enabled': False,
-        'google_allow_unlock': False,
+        'google_secure_devices_pin': '1234',
     })
     response = await client.receive_json()
 
     assert response['success']
     assert not setup_api[PREF_ENABLE_GOOGLE]
     assert not setup_api[PREF_ENABLE_ALEXA]
-    assert not setup_api[PREF_GOOGLE_ALLOW_UNLOCK]
+    assert setup_api[PREF_GOOGLE_SECURE_DEVICES_PIN] == '1234'
 
 
 async def test_enabling_webhook(hass, hass_ws_client, setup_api,
@@ -589,3 +591,101 @@ async def test_disabling_remote(hass, hass_ws_client, setup_api,
     assert not cloud.client.remote_autostart
 
     assert len(mock_disconnect.mock_calls) == 1
+
+
+async def test_enabling_remote_trusted_networks_local4(
+        hass, hass_ws_client, setup_api, mock_cloud_login):
+    """Test we cannot enable remote UI when trusted networks active."""
+    hass.auth._providers[('trusted_networks', None)] = \
+        tn_auth.TrustedNetworksAuthProvider(
+            hass, None, tn_auth.CONFIG_SCHEMA({
+                'type': 'trusted_networks',
+                'trusted_networks': [
+                    '127.0.0.1'
+                ]
+            })
+        )
+
+    client = await hass_ws_client(hass)
+
+    with patch(
+            'hass_nabucasa.remote.RemoteUI.connect',
+            side_effect=AssertionError
+    ) as mock_connect:
+        await client.send_json({
+            'id': 5,
+            'type': 'cloud/remote/connect',
+        })
+        response = await client.receive_json()
+
+    assert not response['success']
+    assert response['error']['code'] == 500
+    assert response['error']['message'] == \
+        'Remote UI not compatible with 127.0.0.1/::1 as a trusted network.'
+
+    assert len(mock_connect.mock_calls) == 0
+
+
+async def test_enabling_remote_trusted_networks_local6(
+        hass, hass_ws_client, setup_api, mock_cloud_login):
+    """Test we cannot enable remote UI when trusted networks active."""
+    hass.auth._providers[('trusted_networks', None)] = \
+        tn_auth.TrustedNetworksAuthProvider(
+            hass, None, tn_auth.CONFIG_SCHEMA({
+                'type': 'trusted_networks',
+                'trusted_networks': [
+                    '::1'
+                ]
+            })
+        )
+
+    client = await hass_ws_client(hass)
+
+    with patch(
+            'hass_nabucasa.remote.RemoteUI.connect',
+            side_effect=AssertionError
+    ) as mock_connect:
+        await client.send_json({
+            'id': 5,
+            'type': 'cloud/remote/connect',
+        })
+        response = await client.receive_json()
+
+    assert not response['success']
+    assert response['error']['code'] == 500
+    assert response['error']['message'] == \
+        'Remote UI not compatible with 127.0.0.1/::1 as a trusted network.'
+
+    assert len(mock_connect.mock_calls) == 0
+
+
+async def test_enabling_remote_trusted_networks_other(
+        hass, hass_ws_client, setup_api, mock_cloud_login):
+    """Test we cannot enable remote UI when trusted networks active."""
+    hass.auth._providers[('trusted_networks', None)] = \
+        tn_auth.TrustedNetworksAuthProvider(
+            hass, None, tn_auth.CONFIG_SCHEMA({
+                'type': 'trusted_networks',
+                'trusted_networks': [
+                    '192.168.0.0/24'
+                ]
+            })
+        )
+
+    client = await hass_ws_client(hass)
+    cloud = hass.data[DOMAIN]
+
+    with patch(
+            'hass_nabucasa.remote.RemoteUI.connect',
+            return_value=mock_coro()
+    ) as mock_connect:
+        await client.send_json({
+            'id': 5,
+            'type': 'cloud/remote/connect',
+        })
+        response = await client.receive_json()
+
+    assert response['success']
+    assert cloud.client.remote_autostart
+
+    assert len(mock_connect.mock_calls) == 1

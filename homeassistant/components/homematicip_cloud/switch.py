@@ -1,19 +1,18 @@
 """Support for HomematicIP Cloud switches."""
 import logging
 
-from homeassistant.components.homematicip_cloud import (
-    DOMAIN as HMIPC_DOMAIN, HMIPC_HAPID, HomematicipGenericDevice)
-from homeassistant.components.homematicip_cloud.device import (
-    ATTR_GROUP_MEMBER_UNREACHABLE)
+from homematicip.aio.device import (
+    AsyncBrandSwitchMeasuring, AsyncFullFlushSwitchMeasuring, AsyncMultiIOBox,
+    AsyncOpenCollector8Module, AsyncPlugableSwitch,
+    AsyncPlugableSwitchMeasuring)
+from homematicip.aio.group import AsyncSwitchingGroup
+
 from homeassistant.components.switch import SwitchDevice
 
-DEPENDENCIES = ['homematicip_cloud']
+from . import DOMAIN as HMIPC_DOMAIN, HMIPC_HAPID, HomematicipGenericDevice
+from .device import ATTR_GROUP_MEMBER_UNREACHABLE
 
 _LOGGER = logging.getLogger(__name__)
-
-ATTR_POWER_CONSUMPTION = 'power_consumption'
-ATTR_ENERGIE_COUNTER = 'energie_counter'
-ATTR_PROFILE_MODE = 'profile_mode'
 
 
 async def async_setup_platform(
@@ -24,16 +23,6 @@ async def async_setup_platform(
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the HomematicIP switch from a config entry."""
-    from homematicip.aio.device import (
-        AsyncPlugableSwitch,
-        AsyncPlugableSwitchMeasuring,
-        AsyncBrandSwitchMeasuring,
-        AsyncFullFlushSwitchMeasuring,
-        AsyncOpenCollector8Module,
-    )
-
-    from homematicip.aio.group import AsyncSwitchingGroup
-
     home = hass.data[HMIPC_DOMAIN][config_entry.data[HMIPC_HAPID]].home
     devices = []
     for device in home.devices:
@@ -49,6 +38,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             devices.append(HomematicipSwitch(home, device))
         elif isinstance(device, AsyncOpenCollector8Module):
             for channel in range(1, 9):
+                devices.append(HomematicipMultiSwitch(home, device, channel))
+        elif isinstance(device, AsyncMultiIOBox):
+            for channel in range(1, 3):
                 devices.append(HomematicipMultiSwitch(home, device, channel))
 
     for group in home.groups:
